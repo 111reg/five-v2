@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>五子棋 正統規則對戰（Atomics 共享記憶體版）</title>
+<title>五子棋 正統規則對戰（Atomics 多核完美版）</title>
 <style>
 body { margin:0; font-family:'Segoe UI',sans-serif; text-align:center; display:flex; flex-direction:column; align-items:center; padding:20px; background:linear-gradient(to bottom,#f8f8f8,#e0e0e0); position: relative; min-height: 100vh; }
 h2 { font-size:2em; margin:10px 0; color:#222; text-shadow:1px 1px 2px #aaa; }
@@ -51,7 +51,7 @@ button:disabled { background-color: #999; cursor: not-allowed; }
     <input type="number" id="depthInput" value="8" min="1" max="15" onchange="updateDepth()">
 </div>
 
-<h2>🎯 正統五子棋（Atomics 共享記憶體版）</h2>
+<h2>🎯 正統五子棋（Atomics 多核完美版）</h2>
 <div id="status">請黑棋先手落子 (第一手必須在正中央)</div>
 <div id="coreInfo"></div>
 
@@ -75,8 +75,8 @@ button:disabled { background-color: #999; cursor: not-allowed; }
 <div class="rules">
 <h3>📝 系統與規則說明</h3>
 <ul>
-<li><strong>Atomics 同步剪枝：</strong>採用 `SharedArrayBuffer` 技術，所有 CPU 核心共用一塊記憶體公佈欄。任一核心算到高分會立刻更新公佈欄，達成完美的跨核心平行 Alpha-Beta 剪枝。</li>
-<li><strong>伺服器限定：</strong>基於瀏覽器資安限制，本網頁必須在含有 <code>Cross-Origin-Opener-Policy: same-origin</code> 與 <code>Cross-Origin-Embedder-Policy: require-corp</code> 標頭的伺服器環境下才能發揮多執行緒共享功能。</li>
+<li><strong>全域同步剪枝：</strong>修正多核分發邏輯與陣營判定，確保各核心皆獲得正確的最優前綴排序，徹底釋放 Atomics 共享記憶體的極致效能。</li>
+<li><strong>伺服器限定：</strong>必須在配備 <code>COOP / COEP</code> 標頭的環境下執行才能啟用多核記憶體共享，否則將自動安全降級為單核處理。</li>
 </ul>
 </div>
 
@@ -246,28 +246,35 @@ function evaluateBoard(tempBoard, isMaximizing, aiPlayerId) {
     return aiScore - (humanScore * 2.0); 
 }
 
-function evaluateMoveImpact(tempBoard, x, y) {
-    tempBoard[x][y] = 2; 
-    let aiScore = 0, aiAlive3 = 0, humanAlive3 = 0;
+// 修正：嚴格依照 aiPlayerId 與 opponentId 切換評分視角
+function evaluateMoveImpact(tempBoard, x, y, aiPlayerId) {
+    let opponentId = 3 - aiPlayerId;
+    
+    tempBoard[x][y] = aiPlayerId; 
+    let aiScore = 0, aiAlive3 = 0;
     for (let l of getIntersectingLines(tempBoard, x, y)) {
-        let aiStr = l.replace(/1/g, 'x').replace(/2/g, '1').replace(/x/g, '2').replace(/3/g, '2');
+        let aiStr = aiPlayerId === 1 ? l : l.replace(/1/g, 'x').replace(/2/g, '1').replace(/x/g, '2');
+        aiStr = aiStr.replace(/3/g, '2');
         if (/(011100|001110|010110|011010)/.test(aiStr)) aiAlive3++;
-        aiScore += evaluateLineString(l, 2, false);
+        aiScore += evaluateLineString(l, aiPlayerId, false);
     }
-    tempBoard[x][y] = 1; 
-    let humanScore = 0;
+    
+    tempBoard[x][y] = opponentId; 
+    let humanScore = 0, humanAlive3 = 0;
     for (let l of getIntersectingLines(tempBoard, x, y)) {
-        let humStr = l.replace(/3/g, '2');
+        let humStr = opponentId === 1 ? l : l.replace(/1/g, 'x').replace(/2/g, '1').replace(/x/g, '2');
+        humStr = humStr.replace(/3/g, '2');
         if (/(011100|001110|010110|011010)/.test(humStr)) humanAlive3++;
-        humanScore += evaluateLineString(l, 1, false);
+        humanScore += evaluateLineString(l, opponentId, false);
     }
+    
     tempBoard[x][y] = 0; 
     if (aiAlive3 >= 2) aiScore += SCORE_ALIVE_4;
     if (humanAlive3 >= 2) humanScore += SCORE_ALIVE_4;
     return aiScore + humanScore; 
 }
 
-function generateCandidateMoves(currentBoard) {
+function generateCandidateMoves(currentBoard, aiPlayerId) {
     let moves = [];
     let hasStone = false;
     for (let i = 0; i < size; i++) {
@@ -284,10 +291,11 @@ function generateCandidateMoves(currentBoard) {
                 }
                 if(isNear) break;
             }
-            if (isNear) moves.push({x: i, y: j, score: evaluateMoveImpact(currentBoard, i, j)});
+            if (isNear) moves.push({x: i, y: j, score: evaluateMoveImpact(currentBoard, i, j, aiPlayerId)});
         }
     }
     if (!hasStone) return [{x:7, y:7}];
+    // 以正確視角排序，並只取前 8 支進行深搜
     return moves.sort((a, b) => b.score - a.score).slice(0, 8);
 }
 
@@ -301,7 +309,7 @@ function minimax(tempBoard, depth, alpha, beta, isMaximizing, lastX, lastY, aiPl
     }
     if (depth === 0) return evaluateBoard(tempBoard, isMaximizing, aiPlayerId);
 
-    let candidates = generateCandidateMoves(tempBoard);
+    let candidates = generateCandidateMoves(tempBoard, aiPlayerId);
     if (isMaximizing) { 
         let maxEval = MIN_INF;
         for (let i = 0; i < candidates.length; i++) {
@@ -331,10 +339,13 @@ function minimax(tempBoard, depth, alpha, beta, isMaximizing, lastX, lastY, aiPl
     }
 }
 
-// 接收主執行緒任務並透過 Atomics 共用 Alpha 剪枝界線
 self.onmessage = function(e) {
     const { board, moves, depth, aiPlayerId, sharedBuffer } = e.data;
-    const sharedAlpha = new Int32Array(sharedBuffer); // 映射共享記憶體
+    
+    let sharedAlpha = null;
+    if (sharedBuffer) {
+        sharedAlpha = new Int32Array(sharedBuffer);
+    }
 
     let bestMove = null;
     let maxEval = MIN_INF;
@@ -343,9 +354,11 @@ self.onmessage = function(e) {
         let move = moves[i];
         board[move.x][move.y] = aiPlayerId;
         
-        // 核心同步剪枝：讀取全域最佳分數作為當前 Alpha 的基礎
-        let currentGlobalAlpha = Atomics.load(sharedAlpha, 0);
-        let initialAlpha = Math.max(MIN_INF, currentGlobalAlpha);
+        let initialAlpha = MIN_INF;
+        if (sharedAlpha) {
+            let currentGlobalAlpha = Atomics.load(sharedAlpha, 0);
+            initialAlpha = Math.max(MIN_INF, currentGlobalAlpha);
+        }
 
         let evalScore = minimax(board, depth - 1, initialAlpha, MAX_INF, false, move.x, move.y, aiPlayerId);
         board[move.x][move.y] = 0;
@@ -354,12 +367,13 @@ self.onmessage = function(e) {
             maxEval = evalScore;
             bestMove = move;
             
-            // 安全寫入最新的最高分，供其他核心讀取
-            let expectedAlpha = Atomics.load(sharedAlpha, 0);
-            while (evalScore > expectedAlpha) {
-                let actual = Atomics.compareExchange(sharedAlpha, 0, expectedAlpha, evalScore);
-                if (actual === expectedAlpha) break; // 成功搶佔寫入
-                expectedAlpha = actual; // 被其他核心搶先，更新後再比對一次
+            if (sharedAlpha) {
+                let expectedAlpha = Atomics.load(sharedAlpha, 0);
+                while (evalScore > expectedAlpha) {
+                    let actual = Atomics.compareExchange(sharedAlpha, 0, expectedAlpha, evalScore);
+                    if (actual === expectedAlpha) break; 
+                    expectedAlpha = actual; 
+                }
             }
         }
         self.postMessage({ type: 'progress' });
@@ -381,15 +395,14 @@ const depthInput = document.getElementById('depthInput');
 const size = 15;
 const cellSize = canvas.width / size;
 
-// 檢查瀏覽器是否支援 SharedArrayBuffer
 let hasSharedMemory = typeof SharedArrayBuffer !== 'undefined';
 const maxCores = navigator.hardwareConcurrency || 4;
 
 if (hasSharedMemory) {
-    coreInfoDiv.textContent = `⚡ Atomics 同步啟動：調用 ${maxCores} 核心，無損平行運算中`;
+    coreInfoDiv.textContent = `⚡ Atomics 同步啟動：完美調用 ${maxCores} 核心分工`;
 } else {
     coreInfoDiv.style.color = "#d93025";
-    coreInfoDiv.innerHTML = `⚠️ 瀏覽器阻擋了共享記憶體。<br>請將此網頁部署至配備 COOP/COEP 標頭的伺服器。目前退回單核心運算。`;
+    coreInfoDiv.innerHTML = `⚠️ 伺服器缺少 COOP/COEP 標頭，退回單核安全模式。`;
 }
 
 let board = [];
@@ -504,6 +517,10 @@ canvas.addEventListener('click', e => {
     processMove(x, y);
 });
 
+// 主執行緒評估模組
+const SCORE_WIN = 10000000;
+const SCORE_ALIVE_4 = 100000;
+
 function checkWinMain(tempBoard, x, y, p) {
     const dirs = [{dx:1, dy:0}, {dx:0, dy:1}, {dx:1, dy:1}, {dx:1, dy:-1}];
     for (const d of dirs) {
@@ -564,6 +581,57 @@ function checkForbiddenMain(tempBoard, x, y) {
     if (threes >= 2) return "雙三";
     return null;
 }
+function getIntersectingLinesMain(tempBoard, x, y) {
+    let lines = [];
+    lines.push('3' + tempBoard[x].join('') + '3');
+    let col = '3';
+    for (let i = 0; i < size; i++) col += tempBoard[i][y];
+    lines.push(col + '3');
+    let d1 = '3';
+    let min1 = Math.min(x, y);
+    for(let i=x-min1, j=y-min1; i<size && j<size; i++, j++) d1 += tempBoard[i][j];
+    lines.push(d1 + '3');
+    let d2 = '3';
+    let min2 = Math.min(x, size - 1 - y);
+    for(let i=x-min2, j=y+min2; i<size && j>=0; i++, j--) d2 += tempBoard[i][j];
+    lines.push(d2 + '3');
+    return lines;
+}
+function evaluateLineStringMain(s, p, isMyTurn) {
+    let score = 0;
+    let str = p === 1 ? s : s.replace(/1/g, 'x').replace(/2/g, '1').replace(/x/g, '2');
+    str = str.replace(/3/g, '2'); 
+    if (str.includes("11111")) return SCORE_WIN;
+    if (str.includes("011110")) { if (isMyTurn) return SCORE_WIN; score += 100000; }
+    else if (/(211110|011112|10111|11011|11101)/.test(str)) { if (isMyTurn) return SCORE_WIN; score += 10000; }
+    if (/(011100|001110|010110|011010)/.test(str)) score += 1000;
+    else if (/(211100|001112|210110|011012|010112|211010|10011|11001)/.test(str)) score += 100;
+    if (/(001100|01010|010010)/.test(str)) score += 10;
+    return score;
+}
+function evaluateMoveImpactMain(tempBoard, x, y, aiPlayerId) {
+    let opponentId = 3 - aiPlayerId;
+    tempBoard[x][y] = aiPlayerId; 
+    let aiScore = 0, aiAlive3 = 0;
+    for (let l of getIntersectingLinesMain(tempBoard, x, y)) {
+        let aiStr = aiPlayerId === 1 ? l : l.replace(/1/g, 'x').replace(/2/g, '1').replace(/x/g, '2');
+        aiStr = aiStr.replace(/3/g, '2');
+        if (/(011100|001110|010110|011010)/.test(aiStr)) aiAlive3++;
+        aiScore += evaluateLineStringMain(l, aiPlayerId, false);
+    }
+    tempBoard[x][y] = opponentId; 
+    let humanScore = 0, humanAlive3 = 0;
+    for (let l of getIntersectingLinesMain(tempBoard, x, y)) {
+        let humStr = opponentId === 1 ? l : l.replace(/1/g, 'x').replace(/2/g, '1').replace(/x/g, '2');
+        humStr = humStr.replace(/3/g, '2');
+        if (/(011100|001110|010110|011010)/.test(humStr)) humanAlive3++;
+        humanScore += evaluateLineStringMain(l, opponentId, false);
+    }
+    tempBoard[x][y] = 0; 
+    if (aiAlive3 >= 2) aiScore += SCORE_ALIVE_4;
+    if (humanAlive3 >= 2) humanScore += SCORE_ALIVE_4;
+    return aiScore + humanScore; 
+}
 
 function processMove(x, y) {
     if (x < 0 || x >= size || y < 0 || y >= size || board[x][y] !== 0) return false;
@@ -615,7 +683,7 @@ function checkTurn() {
     if (isAITurn) triggerAIWorker();
 }
 
-function generateCandidatesMain() {
+function generateCandidatesMain(aiPlayerId) {
     let moves = [];
     let hasStone = false;
     for (let i = 0; i < size; i++) {
@@ -632,11 +700,12 @@ function generateCandidatesMain() {
                 }
                 if(isNear) break;
             }
-            if (isNear) moves.push({x: i, y: j});
+            if (isNear) moves.push({x: i, y: j, score: evaluateMoveImpactMain(board, i, j, aiPlayerId)});
         }
     }
     if (!hasStone) return [{x:7, y:7}];
-    return moves.sort(() => Math.random() - 0.5).slice(0, 16); 
+    // 嚴格依據分數排序，摒棄無意義的隨機打亂
+    return moves.sort((a, b) => b.score - a.score).slice(0, 24); 
 }
 
 function triggerAIWorker() {
@@ -647,15 +716,16 @@ function triggerAIWorker() {
     updateDepth(); 
     
     statusDiv.style.color = "#1e8e3e";
-    statusDiv.textContent = `🤖 AI 共享記憶體多核心演算中 (深度 ${aiSearchDepth})...`;
+    statusDiv.textContent = `🤖 AI 完美排序分發中 (深度 ${aiSearchDepth})...`;
     
-    let candidates = generateCandidatesMain();
-    if (currentPlayer === 1) {
+    let aiPlayerId = currentPlayer;
+    let opponentId = 3 - aiPlayerId;
+    
+    let candidates = generateCandidatesMain(aiPlayerId);
+    if (aiPlayerId === 1) {
         candidates = candidates.filter(m => !checkForbiddenMain(board, m.x, m.y));
     }
 
-    let aiPlayerId = currentPlayer;
-    let opponentId = 3 - aiPlayerId;
     for (let move of candidates) {
         board[move.x][move.y] = aiPlayerId;
         if (checkWinMain(board, move.x, move.y, aiPlayerId)) { board[move.x][move.y] = 0; applyAIMove(move); return; }
@@ -682,16 +752,16 @@ function triggerAIWorker() {
     const workerBlob = new Blob([document.getElementById('aiWorkerCode').textContent], { type: "text/javascript" });
     const workerUrl = URL.createObjectURL(workerBlob);
 
-    // 建立共用的 SharedArrayBuffer (裝載 Int32 全域最高分)
     let sharedBuffer = null;
     let effectiveCores = 1;
     if (hasSharedMemory) {
-        sharedBuffer = new SharedArrayBuffer(4); // 4 bytes = 1 Int32
+        sharedBuffer = new SharedArrayBuffer(4);
         const sharedData = new Int32Array(sharedBuffer);
-        sharedData[0] = -100000000; // 初始化最低分
+        sharedData[0] = -100000000;
         effectiveCores = maxCores;
     }
 
+    // 發牌式分發：依序平均分給各核心，保證強勢步均勻錯開
     const chunks = [];
     for (let i = 0; i < effectiveCores; i++) chunks.push([]);
     candidates.forEach((move, index) => {
