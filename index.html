@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>五子棋 正統規則對戰（Atomics 多核完美版）</title>
+<title>五子棋 正統規則對戰（多核終極完善版）</title>
 <style>
 body { margin:0; font-family:'Segoe UI',sans-serif; text-align:center; display:flex; flex-direction:column; align-items:center; padding:20px; background:linear-gradient(to bottom,#f8f8f8,#e0e0e0); position: relative; min-height: 100vh; }
 h2 { font-size:2em; margin:10px 0; color:#222; text-shadow:1px 1px 2px #aaa; }
@@ -51,7 +51,7 @@ button:disabled { background-color: #999; cursor: not-allowed; }
     <input type="number" id="depthInput" value="8" min="1" max="15" onchange="updateDepth()">
 </div>
 
-<h2>🎯 正統五子棋（Atomics 多核完美版）</h2>
+<h2>🎯 正統五子棋（終極多核防禦版）</h2>
 <div id="status">請黑棋先手落子 (第一手必須在正中央)</div>
 <div id="coreInfo"></div>
 
@@ -75,8 +75,9 @@ button:disabled { background-color: #999; cursor: not-allowed; }
 <div class="rules">
 <h3>📝 系統與規則說明</h3>
 <ul>
-<li><strong>全域同步剪枝：</strong>修正多核分發邏輯與陣營判定，確保各核心皆獲得正確的最優前綴排序，徹底釋放 Atomics 共享記憶體的極致效能。</li>
-<li><strong>伺服器限定：</strong>必須在配備 <code>COOP / COEP</code> 標頭的環境下執行才能啟用多核記憶體共享，否則將自動安全降級為單核處理。</li>
+<li><strong>全域同步剪枝：</strong>修正多核分發邏輯與陣營判定，確保各核心皆獲得正確的最優前綴排序。</li>
+<li><strong>精準防禦評分：</strong>修復 AI 權重失衡導致「寧可輸也不願防守」的邏輯盲點，並完整納入所有死三/邊界阻擋辨識。</li>
+<li><strong>伺服器限定：</strong>必須在配備 <code>COOP / COEP</code> 標頭的環境下執行才能啟用多核記憶體共享，否則自動安全降級為單核處理。</li>
 </ul>
 </div>
 
@@ -208,16 +209,19 @@ function evaluateLineString(s, p, isMyTurn) {
     let score = 0;
     let str = p === 1 ? s : s.replace(/1/g, 'x').replace(/2/g, '1').replace(/x/g, '2');
     str = str.replace(/3/g, '2'); 
-    if (str.includes("11111")) return SCORE_WIN;
+    
+    if (str.includes("11111")) return 500000;
     if (str.includes("011110")) {
-        if (isMyTurn) return SCORE_WIN;
+        if (isMyTurn) return 500000;
         score += SCORE_ALIVE_4;
     } else if (/(211110|011112|10111|11011|11101)/.test(str)) {
-        if (isMyTurn) return SCORE_WIN; 
+        if (isMyTurn) return 500000; 
         score += SCORE_DEAD_4;
     }
+    
     if (/(011100|001110|010110|011010)/.test(str)) score += SCORE_ALIVE_3;
-    else if (/(211100|001112|210110|011012|010112|211010|10011|11001)/.test(str)) score += SCORE_DEAD_3;
+    else if (/(211100|001112|210110|011012|010112|211010|10011|11001|201110|011102|10101)/.test(str)) score += SCORE_DEAD_3;
+    
     if (/(001100|01010|010010)/.test(str)) score += SCORE_ALIVE_2;
     return score;
 }
@@ -246,7 +250,6 @@ function evaluateBoard(tempBoard, isMaximizing, aiPlayerId) {
     return aiScore - (humanScore * 2.0); 
 }
 
-// 修正：嚴格依照 aiPlayerId 與 opponentId 切換評分視角
 function evaluateMoveImpact(tempBoard, x, y, aiPlayerId) {
     let opponentId = 3 - aiPlayerId;
     
@@ -295,7 +298,6 @@ function generateCandidateMoves(currentBoard, aiPlayerId) {
         }
     }
     if (!hasStone) return [{x:7, y:7}];
-    // 以正確視角排序，並只取前 8 支進行深搜
     return moves.sort((a, b) => b.score - a.score).slice(0, 8);
 }
 
@@ -402,7 +404,7 @@ if (hasSharedMemory) {
     coreInfoDiv.textContent = `⚡ Atomics 同步啟動：完美調用 ${maxCores} 核心分工`;
 } else {
     coreInfoDiv.style.color = "#d93025";
-    coreInfoDiv.innerHTML = `⚠️ 伺服器缺少 COOP/COEP 標頭，退回單核安全模式。`;
+    coreInfoDiv.innerHTML = `⚠️ 伺服器缺少 COOP/COEP 標頭，安全退回單核降級模式。`;
 }
 
 let board = [];
@@ -517,7 +519,6 @@ canvas.addEventListener('click', e => {
     processMove(x, y);
 });
 
-// 主執行緒評估模組
 const SCORE_WIN = 10000000;
 const SCORE_ALIVE_4 = 100000;
 
@@ -601,11 +602,19 @@ function evaluateLineStringMain(s, p, isMyTurn) {
     let score = 0;
     let str = p === 1 ? s : s.replace(/1/g, 'x').replace(/2/g, '1').replace(/x/g, '2');
     str = str.replace(/3/g, '2'); 
-    if (str.includes("11111")) return SCORE_WIN;
-    if (str.includes("011110")) { if (isMyTurn) return SCORE_WIN; score += 100000; }
-    else if (/(211110|011112|10111|11011|11101)/.test(str)) { if (isMyTurn) return SCORE_WIN; score += 10000; }
+    
+    if (str.includes("11111")) return 500000;
+    if (str.includes("011110")) {
+        if (isMyTurn) return 500000;
+        score += 100000;
+    } else if (/(211110|011112|10111|11011|11101)/.test(str)) {
+        if (isMyTurn) return 500000; 
+        score += 10000;
+    }
+    
     if (/(011100|001110|010110|011010)/.test(str)) score += 1000;
-    else if (/(211100|001112|210110|011012|010112|211010|10011|11001)/.test(str)) score += 100;
+    else if (/(211100|001112|210110|011012|010112|211010|10011|11001|201110|011102|10101)/.test(str)) score += 100;
+    
     if (/(001100|01010|010010)/.test(str)) score += 10;
     return score;
 }
@@ -704,7 +713,6 @@ function generateCandidatesMain(aiPlayerId) {
         }
     }
     if (!hasStone) return [{x:7, y:7}];
-    // 嚴格依據分數排序，摒棄無意義的隨機打亂
     return moves.sort((a, b) => b.score - a.score).slice(0, 24); 
 }
 
@@ -761,7 +769,6 @@ function triggerAIWorker() {
         effectiveCores = maxCores;
     }
 
-    // 發牌式分發：依序平均分給各核心，保證強勢步均勻錯開
     const chunks = [];
     for (let i = 0; i < effectiveCores; i++) chunks.push([]);
     candidates.forEach((move, index) => {
